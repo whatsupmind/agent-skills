@@ -17,11 +17,12 @@ npx skills add whatsupmind/agent-skills
 Operator manual for WhatSupMind. Covers:
 
 - Linking WhatsApp sessions via QR code or pairing code
-- Configuring HelloMinds Builder keys, account forwarding, per-channel Minds, and fallback selection
-- Understanding group mention filtering, SSE replies, stable conversations, and attachments
+- Signing in through HelloMinds OAuth, server-managed token refresh, and renewed consent
+- Configuring account forwarding, per-channel Minds, and fallback selection
+- Understanding group mention filtering, alias-scoped SSE replies, stable conversations, and attachments
 - Registering and verifying signed webhooks, delivery retries, and authenticated custom replies
 - Using the V1 REST API with enabled-channel filtering, cursor pagination, and queued sends
-- OAuth login setup (Google, GitHub, X)
+- HelloMinds OAuth client/callback setup, recent history sync, and session removal
 - Common troubleshooting
 
 Read the [operator skill](whatsupmind-operator-manual/SKILL.md) and its
@@ -29,11 +30,12 @@ Read the [operator skill](whatsupmind-operator-manual/SKILL.md) and its
 
 ## Source alignment
 
-Checked against `whatsupmind-gh` commit
-`d9a6d5f46af65d4140a1b74b7cb83397b5bd50e4` (2026-10-13).
+Checked against `whatsupmind-gh` **main**, commit
+`ddf6113c13756e01a20cdb7839633268408097ec` (2026-10-13).
 The implementation is authoritative where older application docs differ.
-Current integrations use SSE for Mind replies and authenticated V1 sends for
-custom replies; legacy reply-token and email-reply instructions have been removed.
+Current integrations use unified HelloMinds OAuth login, alias-scoped SSE for
+Mind replies, and authenticated V1 sends for custom replies. Builder-key setup,
+direct social/password login, and legacy reply-token/email-reply workflows are obsolete.
 
 `whatsupmind-operator-manual/SKILL.md` is the canonical installable skill.
 The repository follows the Agent Skills layout supported by the Skills CLI:
@@ -54,7 +56,9 @@ npx skills add . --list
 ```
 
 When updating, check the source files listed in the skill, update its API
-reference, and advance the recorded source revision in both places.
+reference, and advance the recorded source revision in both places. Verify
+`origin/main` first: a local checkout on the legacy `old` branch is not the
+source for the current product.
 
 ## License
 

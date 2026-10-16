@@ -1,6 +1,6 @@
 # WhatSupMind API reference for agents
 
-Checked against `whatsupmind-gh` revision `d9a6d5f`. Paths below are relative to
+Checked against `whatsupmind-gh` **main**, revision `ddf6113`. Paths below are relative to
 the API base URL. Examples assume `API_URL`, `USER_JWT`, `WUM_API_KEY`, and
 `SESSION_ID` have been supplied for the intended deployment/session.
 
@@ -11,11 +11,32 @@ the API base URL. Examples assume `API_URL`, `USER_JWT`, `WUM_API_KEY`, and
 | User JWT | `Authorization: Bearer <user-jwt>` | `/api/user/*`: owned sessions, keys, channels, webhooks, HelloMinds settings |
 | Session API key | `Authorization: Bearer wum_…` or `X-Api-Key: wum_…` | `/v1/*`: the session identified by the key |
 | Admin key | `X-Api-Key: <admin-key>` or bearer header | Administrative endpoints, including `/admin/workers` and `/metrics` |
-| Builder key | Managed through HelloMinds settings | WhatSupMind's upstream HelloMinds requests use `X-Access-Key` |
+| HelloMinds OAuth tokens | Obtained through browser PKCE and stored by the API | Upstream SDK/SSE requests use a refreshed OAuth bearer token |
 
-Login/register use `/api/auth/login` and `/api/auth/register` with JSON
-`{ "email": "…", "password": "…" }`. The dashboard manages its own login
-session. Never substitute a `wum_` key for the user JWT on management routes.
+### Unified HelloMinds login
+
+The dashboard uses Minds Connect PKCE at `/hellominds/callback`. It first posts
+`{ "accessToken": "<hellominds-access-token>", "idToken": "<hellominds-id-token>" }`
+to `POST /api/auth/hellominds`. The HelloMinds ID token supplies the email claim;
+it is distinct from the WhatSupMind token returned by this endpoint.
+
+The response contains `{ idToken, refreshToken, jti, expiresAt, email }`:
+the returned `idToken` is the **WhatSupMind user JWT**, used as `USER_JWT` below.
+The callback then stores the HelloMinds forwarding bundle through the authenticated
+OAuth token endpoint before activating the dashboard session.
+
+| Method and path | Purpose |
+| --- | --- |
+| `POST /api/auth/hellominds` | Exchange HelloMinds identity for WhatSupMind login tokens. |
+| `GET /api/auth/me` | Current user, including `authProviders: ["hellominds"]`; user JWT required. |
+| `POST /api/auth/refresh` | `{ "refreshToken": "<whatsupmind-refresh-token>" }`; rotates the app token pair. |
+| `POST /api/auth/logout` | Consume the supplied app `refreshToken`. |
+| `POST /api/auth/logout-all` | Revoke all app sessions for the authenticated user. |
+| `DELETE /api/auth/account` | Delete the authenticated user's account and associated data. |
+
+Email/password and direct Google/GitHub/X login routes are no longer available.
+Never substitute a `wum_` key or HelloMinds access token for the WhatSupMind user
+JWT on management routes.
 
 ## User management routes
 
@@ -29,7 +50,7 @@ URL-encode path values such as `chatJid`.
 | `GET /api/user/sessions/:id` | Session details. |
 | `GET /api/user/sessions/:id/status` | Live status and `qrCode` when available. |
 | `PATCH /api/user/sessions/:id` | Rename with `{ "label": "New name" }`. |
-| `DELETE /api/user/sessions/:id` | Disconnect and delete the session. |
+| `DELETE /api/user/sessions/:id` | Hard-delete session and child data with best-effort phone unpairing. Phone logout alone instead retains an `unlinked` session. |
 | `POST /api/user/sessions/:id/keys` | Generate another session key; optional `label`. Save returned `apiKey`. |
 | `GET /api/user/sessions/:id/keys` | List key metadata, not raw keys. |
 | `GET /api/user/sessions/:id/keys/:keyId/reveal` | Reveal an encrypted stored key; older keys may return `409`. |
@@ -53,7 +74,7 @@ group JID; replace it with the intended group's identifier.
 curl -X PATCH "$API_URL/api/user/sessions/$SESSION_ID/channels/120363012345678901%40g.us" \
   -H "Authorization: Bearer $USER_JWT" \
   -H 'Content-Type: application/json' \
-  -d '{"enabled":true,"mindEnabled":true,"mindId":null}'
+  -d '{"enabled":true,"mindEnabled":true,"mindId":"<selected-mind-id>"}'
 
 # Only after the previous request succeeds:
 curl -X PATCH "$API_URL/api/user/sessions/$SESSION_ID/channels/120363012345678901%40g.us" \
@@ -65,8 +86,11 @@ curl "$API_URL/api/user/sessions/$SESSION_ID/channels" \
   -H "Authorization: Bearer $USER_JWT"
 ```
 
-`mindId: null` means use the account fallback. A channel-specific ID overrides
-it. Enable Mind before the mention filter because the filter setter requires
+Choose an enabled Mind ID from the Minds list. `mindId: null` still resolves
+the account fallback at runtime in the REST API. The dashboard's **Use fallback**
+instead writes the current fallback's concrete ID, so it is not a dynamic link.
+Dashboard selection enables Mind; clearing it disables Mind. Enable Mind before
+the mention filter because the filter setter requires
 Mind to already be on. Read back persisted values; PATCH echoes supplied fields
 and may not reflect a filter coerced off by the setter.
 
@@ -74,12 +98,13 @@ and may not reflect a filter coerced off by the setter.
 
 | Method and path | Contract |
 | --- | --- |
-| `GET /api/user/hellominds/settings` | `accessKeySet`, `selectedMindId`, `selectedMindName`, `enabled`, and `humanId` when stored. |
-| `PUT /api/user/hellominds/settings` | Partial update: `accessKey`, `selectedMindId`, `selectedMindName`, `enabled`. |
+| `GET /api/user/hellominds/settings` | `oauthConnected`, `scope`, `selectedMindId`, `selectedMindName`, `enabled`, and `humanId` when stored. No raw tokens. |
+| `PUT /api/user/hellominds/settings` | Partial update: `selectedMindId`, `selectedMindName`, `enabled`. Requires a stored OAuth connection. |
 | `GET /api/user/hellominds/minds` | `{ "minds": [{ "id": "…", "name": "…", "description": "…", "isEnabled": true }] }`. |
+| `POST /api/user/hellominds/oauth/token` | Store the browser's OAuth token bundle after login. |
+| `POST /api/user/hellominds/oauth/disconnect` | Best-effort upstream revoke and local token clearing; `{ "ok": true }`, idempotent if already disconnected. |
 
-Save the Builder key via `PUT` with `{ "accessKey": "<builder-key>" }`, then
-list Minds and choose an enabled one. Example fallback selection:
+After OAuth login, list Minds and choose an enabled one. Example fallback selection:
 
 ```bash
 curl -X PUT "$API_URL/api/user/hellominds/settings" \
@@ -88,10 +113,41 @@ curl -X PUT "$API_URL/api/user/hellominds/settings" \
   -d '{"selectedMindId":"<mind-id>","selectedMindName":"Support","enabled":true}'
 ```
 
-Empty or null selected-Mind fields clear the fallback. `accessKey: null`
-disconnects. Invalid keys return `400`; listing Minds without a key returns
-`400`, and upstream list failures return `502`. Use these actual responses to
-diagnose an empty selector rather than assuming no Minds exist.
+Empty or null selected-Mind fields clear the fallback. The settings API has no
+`accessKey` field; use the OAuth disconnect endpoint to disconnect. The UI calls
+`enabled` **Fallback enabled**, but the forwarding handler uses it as a master
+gate even for channel-specific Minds.
+
+The token-storage body is the bundle returned by browser OAuth, not values an
+operator should construct manually:
+
+```json
+{
+  "accessToken": "<hellominds-access-token>",
+  "refreshToken": "<hellominds-refresh-token>",
+  "expiresIn": 900,
+  "scope": "<granted-scope-string>",
+  "idToken": "<hellominds-id-token>"
+}
+```
+
+`accessToken`, `refreshToken`, numeric `expiresIn`, and `scope` are required;
+`idToken` carries the internal `humanId` and must match the access-token subject
+when supplied. Successful storage returns `{ ok: true, humanId, scope }`.
+Malformed/incomplete input returns `400`; a HelloMinds account already bound to
+another user returns `409`; storage failures return `500`.
+
+Storage normally enables forwarding and attempts to select the first enabled
+Mind when none is selected. Existing migrated disabled settings can be retained.
+Always read settings afterward. The API then owns refresh-token rotation;
+do not independently refresh or replay the stored token bundle.
+
+Settings updates without an OAuth connection return `400`. Minds-list requests
+with missing or terminally invalid authorization return `401` and code
+`HELLOMINDS_LOGIN_REQUIRED`, invalidating app sessions and requiring a fresh
+HelloMinds login. Network/5xx/permission failures return `502` without treating
+them as grant revocation. `oauthConnected` indicates stored credentials, not a
+live upstream authorization check.
 
 ## External V1 API
 
